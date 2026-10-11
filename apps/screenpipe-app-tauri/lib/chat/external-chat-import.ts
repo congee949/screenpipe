@@ -285,9 +285,9 @@ async function listClaudeCandidates(
  */
 export async function listPiSessionRoots(home: string): Promise<string[]> {
   const piHome = await join(home, ".pi");
-  if (!(await exists(piHome))) return [];
   const roots: string[] = [];
   try {
+    if (!(await exists(piHome))) return [];
     for (const entry of await readDir(piHome)) {
       if (!entry.isDirectory) continue;
       const root = await join(piHome, entry.name, "sessions");

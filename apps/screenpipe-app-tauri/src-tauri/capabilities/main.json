@@ -200,6 +200,14 @@
           "requireLiteralLeadingDot": false
         },
         {
+          "path": "$HOME/.screenpipe/.e2e/external-chat-home/.pi",
+          "requireLiteralLeadingDot": false
+        },
+        {
+          "path": "$HOME/.screenpipe/.e2e/external-chat-home/.pi/**",
+          "requireLiteralLeadingDot": false
+        },
+        {
           "path": "$RESOURCE/.screenpipe/**",
           "requireLiteralLeadingDot": false
         },
@@ -225,6 +233,14 @@
         },
         {
           "path": "$HOME/.claude/**",
+          "requireLiteralLeadingDot": false
+        },
+        {
+          "path": "$HOME/.pi",
+          "requireLiteralLeadingDot": false
+        },
+        {
+          "path": "$HOME/.pi/**",
           "requireLiteralLeadingDot": false
         },
         {

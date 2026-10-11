@@ -46,6 +46,29 @@ describe("scanExternalChatHistory", () => {
     mocks.exists.mockResolvedValue(true);
   });
 
+  it("keeps Claude and Codex history when ~/.pi is outside the fs scope", async () => {
+    const nowMs = new Date(2026, 9, 11, 12, 0, 0).getTime();
+    mocks.exists.mockImplementation(async (path: string) => {
+      if (path.startsWith("/fixture/.pi")) {
+        throw new Error("forbidden path: /fixture/.pi");
+      }
+      return true;
+    });
+    mocks.readDir.mockImplementation(async (path: string) =>
+      path === "/fixture/.claude/projects/-Users-me"
+        ? [{ name: "session.jsonl", isDirectory: false }]
+        : path === "/fixture/.claude/projects"
+          ? [{ name: "-Users-me", isDirectory: true }]
+          : []);
+    mocks.stat.mockResolvedValue({ size: 1024, mtime: new Date(nowMs) });
+
+    const result = await scanExternalChatHistory({ nowMs });
+
+    expect(result.sources.find((source) => source.source === "claude-code")?.candidates)
+      .toHaveLength(1);
+    expect(result.sources.find((source) => source.source === "pi")?.candidates).toEqual([]);
+  });
+
   it("discovers recent Pi sessions in every agent dir below ~/.pi", async () => {
     const nowMs = new Date(2026, 9, 11, 12, 0, 0).getTime();
     const recent = "2026-10-11T01-11-58-755Z_recent.jsonl";
