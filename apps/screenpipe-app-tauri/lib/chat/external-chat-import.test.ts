@@ -46,6 +46,44 @@ describe("scanExternalChatHistory", () => {
     mocks.exists.mockResolvedValue(true);
   });
 
+  it("discovers recent Pi sessions in every agent dir below ~/.pi", async () => {
+    const nowMs = new Date(2026, 9, 11, 12, 0, 0).getTime();
+    const recent = "2026-10-11T01-11-58-755Z_recent.jsonl";
+    const old = "2026-09-01T01-11-58-755Z_old.jsonl";
+    mocks.exists.mockImplementation(async (path: string) =>
+      path !== "/fixture/.pi/extensions/sessions");
+    mocks.readDir.mockImplementation(async (path: string) => {
+      if (path === "/fixture/.pi") {
+        return ["agent", "agent-work", "extensions"].map((name) => ({ name, isDirectory: true }));
+      }
+      if (path === "/fixture/.pi/agent/sessions" || path === "/fixture/.pi/agent-work/sessions") {
+        return [{ name: "--Users-me--", isDirectory: true }];
+      }
+      if (path === "/fixture/.pi/agent-work/sessions/--Users-me--") {
+        return [
+          { name: recent, isDirectory: false },
+          { name: old, isDirectory: false },
+          { name: recent.replace(".jsonl", ""), isDirectory: true },
+        ];
+      }
+      return [];
+    });
+    mocks.stat.mockImplementation(async (path: string) => ({
+      size: 1024,
+      mtime: new Date(path.endsWith(recent) ? nowMs - 60_000 : nowMs - 40 * 24 * 60 * 60 * 1000),
+    }));
+
+    const result = await scanExternalChatHistory({ nowMs });
+    const pi = result.sources.find((source) => source.source === "pi");
+
+    expect(pi?.label).toBe("Pi");
+    expect(pi?.candidates).toEqual([expect.objectContaining({
+      source: "pi",
+      path: `/fixture/.pi/agent-work/sessions/--Users-me--/${recent}`,
+    })]);
+    expect(mocks.readDir).not.toHaveBeenCalledWith("/fixture/.pi/extensions/sessions");
+  });
+
   it("bounds Codex discovery to seven days and stops after the recent-chat cap", async () => {
     const nowMs = new Date(2026, 7, 21, 12, 0, 0).getTime();
     const recentEntries = Array.from({ length: 150 }, (_, index) => ({

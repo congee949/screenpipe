@@ -26,6 +26,12 @@ describe("imported chat presets", () => {
     expect(cloud.defaultPreset).toBe(true);
   });
 
+  it("continues Pi chats with the default preset instead of creating an ACP preset", () => {
+    expect(resolveImportedChatPreset({
+      importedFrom: { source: "pi", sourceId: "demo", importedAt: 1, config: { model: "custom/model" } },
+    }, [cloud], true)).toBeUndefined();
+  });
+
   it("reuses an exact configuration but leaves other chats' presets untouched", () => {
     const first = resolveImportedChatPreset(codex, [cloud], true)!.preset;
     expect(resolveImportedChatPreset(codex, [cloud, first], true)).toEqual({ preset: first, created: false });

@@ -145,7 +145,7 @@ export interface Message {
   role: "user" | "assistant";
   content: string;
   /** Local history source for messages copied from another agent client. */
-  importedFrom?: "claude-code" | "codex";
+  importedFrom?: "claude-code" | "codex" | "pi";
   displayContent?: string;
   intent?: "steer";
   turnIntentId?: string;

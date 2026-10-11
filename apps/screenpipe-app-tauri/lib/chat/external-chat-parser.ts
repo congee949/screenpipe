@@ -5,7 +5,13 @@
 import type { ChatConversation, ChatMessage, ImportedAgentConfig } from "@/lib/hooks/use-settings";
 import type { ContentBlock, ToolCall } from "@/lib/chat/types";
 
-export type ExternalChatSource = "claude-code" | "codex";
+export type ExternalChatSource = "claude-code" | "codex" | "pi";
+
+export function externalChatSourceLabel(source: ExternalChatSource): string {
+  if (source === "claude-code") return "Claude Code";
+  if (source === "pi") return "Pi";
+  return "Codex";
+}
 
 export interface ExternalChatParseOptions {
   sourceId: string;
@@ -152,7 +158,7 @@ function finishConversation({
     id: externalChatConversationId(source, sourceId),
     title: cleanExplicitTitle
       ? titleFromText(cleanExplicitTitle)
-      : titleFromText(fallbackTitle ?? `${source === "claude-code" ? "Claude Code" : "Codex"} chat`),
+      : titleFromText(fallbackTitle ?? `${externalChatSourceLabel(source)} chat`),
     titleSource: cleanExplicitTitle ? titleSource ?? "ai" : "fallback",
     messages: visibleMessages,
     createdAt,
@@ -763,14 +769,224 @@ export function parseCodexTranscript(
   return parseCodexTranscriptSnapshot(jsonl, options).conversation;
 }
 
+const PI_IMAGE_MIME = /^image\/(?:png|jpeg|jpg|gif|webp|avif|bmp)$/i;
+
+function piImages(content: unknown): string[] {
+  return asArray(content)
+    .map(asRecord)
+    .filter((part) => part?.type === "image")
+    .flatMap((part) => {
+      const mime = asString(part?.mimeType);
+      const data = asString(part?.data);
+      return mime && data && PI_IMAGE_MIME.test(mime) && /^[a-z0-9+/]+={0,2}$/i.test(data)
+        ? [`data:${mime};base64,${data}`]
+        : [];
+    });
+}
+
+/**
+ * Pi entries form a tree through `id`/`parentId`; branching via `/tree` keeps
+ * abandoned branches in the same file. The visible conversation is the path
+ * from the current leaf (the last appended entry) back to the root.
+ */
+function piActiveBranch(records: UnknownRecord[]): UnknownRecord[] {
+  const byId = new Map<string, UnknownRecord>();
+  for (const record of records) {
+    const id = asString(record.id);
+    if (id && record.type !== "session") byId.set(id, record);
+  }
+  const leaf = [...records].reverse().find(
+    (record) => record.type !== "session" && asString(record.id),
+  );
+  const path: UnknownRecord[] = [];
+  const seen = new Set<string>();
+  let node = leaf;
+  while (node) {
+    const id = asString(node.id)!;
+    if (seen.has(id)) break;
+    seen.add(id);
+    path.push(node);
+    const parentId = asString(node.parentId);
+    node = parentId ? byId.get(parentId) : undefined;
+  }
+  return path.reverse();
+}
+
+function parsePiTranscriptSnapshot(
+  jsonl: string,
+  options: ExternalChatParseOptions,
+): ExternalChatTranscriptSnapshot {
+  const records = parseJsonLines(jsonl);
+  const fallbackTimestamp = options.fallbackTimestamp;
+  const importedAt = options.importedAt ?? Date.now();
+  const header = records.find((record) => record.type === "session");
+  const sessionId = asString(header?.id) ?? options.sourceId;
+  const messages: ChatMessage[] = [];
+  const toolCalls = new Map<string, ImportedToolCall>();
+  const config: ImportedAgentConfig = {};
+  let sessionName: string | undefined;
+  // Pi persists each model response separately; consecutive responses within
+  // one turn render as a single assistant message, like a Claude Code turn.
+  let assistant: ChatMessage | undefined;
+  let turnActive = false;
+  let activeTurnKey = "pending";
+  let activeTurnTimestamp = fallbackTimestamp;
+
+  for (const [index, record] of piActiveBranch(records).entries()) {
+    const type = asString(record.type);
+    if (type === "session_info") {
+      sessionName = asString(record.name) ?? sessionName;
+      continue;
+    }
+    if (type === "thinking_level_change") {
+      const level = asString(record.thinkingLevel);
+      if (level) config.reasoningEffort = level;
+      continue;
+    }
+    // System prompts, extension messages, and compaction or branch summaries
+    // are harness context rather than conversation turns.
+    if (type !== "message") continue;
+
+    const message = asRecord(record.message);
+    const role = asString(message?.role);
+    if (!message || !role) continue;
+    const entryId = asString(record.id) ?? String(index);
+    const timestamp = timestampMs(message.timestamp, timestampMs(record.timestamp, fallbackTimestamp));
+
+    if (role === "user") {
+      assistant = undefined;
+      const text = textBlocks(message.content, new Set(["text"])).join("\n\n").trim();
+      const images = piImages(message.content);
+      if (!text && images.length === 0) continue;
+      turnActive = true;
+      activeTurnKey = entryId;
+      activeTurnTimestamp = timestamp;
+      messages.push({
+        id: messageId("pi", sessionId, entryId, index),
+        role: "user",
+        content: text,
+        ...(images.length > 0 ? { images } : {}),
+        timestamp,
+        provider: "pi",
+        importedFrom: "pi",
+      });
+      continue;
+    }
+
+    if (role === "toolResult") {
+      const callId = asString(message.toolCallId);
+      const toolCall = callId ? toolCalls.get(callId) : undefined;
+      if (toolCall) {
+        toolCall.result = truncateToolResult(
+          textBlocks(message.content, new Set(["text"])).join("\n"),
+        );
+        toolCall.isError = message.isError === true;
+        toolCall.isRunning = false;
+        delete toolCall.startedAtMs;
+      }
+      continue;
+    }
+
+    if (role !== "assistant") continue;
+    const model = asString(message.model);
+    if (model) config.model = model;
+    if (!assistant) {
+      assistant = {
+        id: messageId("pi", sessionId, entryId, index),
+        role: "assistant",
+        content: "",
+        timestamp,
+        model,
+        provider: "pi",
+        importedFrom: "pi",
+        contentBlocks: [],
+      };
+      messages.push(assistant);
+    }
+    assistant.timestamp = Math.max(assistant.timestamp, timestamp);
+    if (model) assistant.model = model;
+
+    for (const rawBlock of asArray(message.content)) {
+      const block = asRecord(rawBlock);
+      const blockType = asString(block?.type);
+      if (!block || !blockType) continue;
+      if (blockType === "text") {
+        const text = asString(block.text)?.trim();
+        if (!text) continue;
+        assistant.content = [assistant.content, text].filter(Boolean).join("\n\n");
+        appendUniqueBlock(assistant, { type: "text", text });
+      } else if (blockType === "thinking") {
+        const text = asString(block.thinking)?.trim();
+        if (text) appendUniqueBlock(assistant, { type: "thinking", text, isThinking: false });
+      } else if (blockType === "toolCall") {
+        const callId = asString(block.id) ?? `${entryId}-tool-${assistant.contentBlocks?.length ?? 0}`;
+        const toolCall = {
+          id: callId,
+          toolName: asString(block.name) ?? "tool",
+          args: parseToolArgs(block.arguments),
+          isRunning: true,
+          startedAtMs: timestamp,
+        };
+        toolCalls.set(callId, toolCall);
+        appendUniqueBlock(assistant, { type: "tool", toolCall });
+      }
+    }
+
+    // `toolUse` means Pi is about to run tools and call the model again; any
+    // other stop reason (stop, length, error, aborted) ends the turn.
+    turnActive = asString(message.stopReason) === "toolUse";
+    if (!turnActive) {
+      for (const toolCall of toolCalls.values()) {
+        if (toolCall.isRunning) {
+          toolCall.isRunning = false;
+          delete toolCall.startedAtMs;
+        }
+      }
+    }
+  }
+
+  if (turnActive && messages.at(-1)?.role === "user") {
+    messages.push({
+      id: messageId("pi", sessionId, `live-${activeTurnKey}`, messages.length),
+      role: "assistant",
+      content: "Processing...",
+      contentBlocks: [],
+      timestamp: activeTurnTimestamp,
+      provider: "pi",
+      importedFrom: "pi",
+    });
+  }
+
+  return {
+    conversation: finishConversation({
+      source: "pi",
+      sourceId: sessionId,
+      messages,
+      config,
+      explicitTitle: sessionName,
+      titleSource: sessionName ? "user" : undefined,
+      fallbackTimestamp,
+      importedAt,
+    }),
+    turnState: { isLoading: turnActive, isStreaming: turnActive },
+  };
+}
+
+export function parsePiTranscript(
+  jsonl: string,
+  options: ExternalChatParseOptions,
+): ChatConversation | null {
+  return parsePiTranscriptSnapshot(jsonl, options).conversation;
+}
+
 export function parseExternalChatTranscriptSnapshot(
   source: ExternalChatSource,
   jsonl: string,
   options: ExternalChatParseOptions,
 ): ExternalChatTranscriptSnapshot {
-  return source === "claude-code"
-    ? parseClaudeCodeTranscriptSnapshot(jsonl, options)
-    : parseCodexTranscriptSnapshot(jsonl, options);
+  if (source === "claude-code") return parseClaudeCodeTranscriptSnapshot(jsonl, options);
+  if (source === "pi") return parsePiTranscriptSnapshot(jsonl, options);
+  return parseCodexTranscriptSnapshot(jsonl, options);
 }
 
 export function parseExternalChatTranscript(

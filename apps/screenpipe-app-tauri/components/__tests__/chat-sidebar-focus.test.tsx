@@ -135,6 +135,18 @@ describe("SidebarChatRow current conversation", () => {
       "Terminal · Codex",
     );
   });
+
+  it("shows Pi provenance for imported local history", () => {
+    renderRow(false, "idle", {
+      importedFrom: {
+        source: "pi",
+        sourceId: "pi-session",
+        importedAt: 100,
+      },
+    });
+
+    expect(screen.getByLabelText("Pi source")).toHaveAttribute("title", "Pi");
+  });
 });
 
 describe("Recents provider filtering", () => {
@@ -155,13 +167,19 @@ describe("Recents provider filtering", () => {
       "screenpipe",
       "codex",
       "claude-code",
+      "pi",
     ]);
+  });
+
+  it("restores a saved preference to hide Pi chats", () => {
+    expect([...hiddenRecentSourcesFromStoredValue('["pi","unknown"]')]).toEqual(["pi"]);
   });
 
   it.each([
     ["screenpipe", "Screenpipe", "/images/screenpipe.png"],
     ["codex", "Codex", "/images/codex.svg"],
     ["claude-code", "Claude", "/images/claude-ai.svg"],
+    ["pi", "Pi", "/images/pi.svg"],
   ] as const)("shows the %s mark in the source picker", (source, label, icon) => {
     const option = visibleRecentSourceOptions().find((option) => option.source === source)!;
     const { container } = render(

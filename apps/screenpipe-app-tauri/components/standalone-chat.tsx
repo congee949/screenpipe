@@ -825,14 +825,15 @@ export function StandaloneChat({
 
   // Live read-only sessions keep their messages in the chat store, not in this
   // component's local agent buffer. Pipe watches are written by their event
-  // writer; imported Codex/Claude chats are written by the JSONL watcher. Read
+  // writer; imported Codex/Claude/Pi chats are written by the JSONL watcher. Read
   // both directly so a provider append cannot wait on a second local-state
   // adoption path before it appears in the open chat.
   const storeBackedMessages = useChatStore((state) => {
     if (!conversationId) return undefined;
     const session = state.sessions[conversationId];
     const isExternalAgent = session?.importedFrom?.source === "codex"
-      || session?.importedFrom?.source === "claude-code";
+      || session?.importedFrom?.source === "claude-code"
+      || session?.importedFrom?.source === "pi";
     return session?.kind === "pipe-watch" || isExternalAgent
       ? session?.messages
       : undefined;
@@ -840,7 +841,7 @@ export function StandaloneChat({
   const isExternalAgentConversation = useChatStore((state) => {
     if (!conversationId) return false;
     const source = state.sessions[conversationId]?.importedFrom?.source;
-    return source === "codex" || source === "claude-code";
+    return source === "codex" || source === "claude-code" || source === "pi";
   });
   const pipeRunArtifactSource = useChatStore((state) => {
     if (!conversationId) return null;

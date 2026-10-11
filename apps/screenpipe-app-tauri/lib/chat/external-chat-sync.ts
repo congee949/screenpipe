@@ -14,6 +14,7 @@ import {
   externalChatCandidateForPath,
   importExternalChatHistory,
   isScreenpipeBackgroundClaudeProject,
+  listPiSessionRoots,
   scanExternalChatHistory,
   type ExternalChatCandidate,
 } from "@/lib/chat/external-chat-import";
@@ -60,6 +61,10 @@ export function isExternalChatTranscriptPath(
       && !isScreenpipeBackgroundClaudeProject(segments[0]);
   }
 
+  if (source === "pi") {
+    return segments.length === 2 && segments[1].toLowerCase().endsWith(".jsonl");
+  }
+
   return segments.length === 4
     && /^\d{4}$/.test(segments[0])
     && /^\d{2}$/.test(segments[1])
@@ -86,6 +91,7 @@ async function watchTargets(home: string): Promise<WatchTarget[]> {
   return [
     { source: "claude-code", root: await join(home, ".claude", "projects") },
     { source: "codex", root: await join(home, ".codex", "sessions") },
+    ...(await listPiSessionRoots(home)).map((root) => ({ source: "pi" as const, root })),
   ];
 }
 
@@ -107,7 +113,6 @@ export async function startExternalChatSync(
     };
   }
 
-  const targets = await watchTargets(home);
   const unwatchByRoot = new Map<string, UnwatchFn>();
   let stopped = false;
   let lastFullSyncAt = 0;
@@ -134,7 +139,8 @@ export async function startExternalChatSync(
   };
 
   const ensureWatchers = async () => {
-    for (const target of targets) {
+    // Re-list targets each time: Pi agent dirs can be created after startup.
+    for (const target of await watchTargets(home)) {
       if (stopped || unwatchByRoot.has(target.root) || !(await exists(target.root))) {
         continue;
       }

@@ -7,6 +7,7 @@ import {
   parseClaudeCodeTranscript,
   parseCodexTranscript,
   parseExternalChatTranscriptSnapshot,
+  parsePiTranscript,
 } from "@/lib/chat/external-chat-parser";
 
 function jsonl(records: unknown[]): string {
@@ -497,5 +498,110 @@ describe("external agent chat parsers", () => {
         },
       },
     ]), { sourceId: "empty", fallbackTimestamp: 1 })).toBeNull();
+  });
+
+  describe("Pi sessions", () => {
+    const at = Date.parse("2026-10-11T01:12:00Z");
+    const entry = (id: string, parentId: string | null, message: Record<string, unknown>) => ({
+      type: "message", id, parentId, timestamp: new Date(at).toISOString(), message,
+    });
+    const header = { type: "session", version: 3, id: "pi-session", timestamp: "2026-10-11T01:11:58Z", cwd: "/work" };
+
+    it("imports the active branch with merged turns, thinking, and tool results", () => {
+      const conversation = parsePiTranscript(jsonl([
+        header,
+        { type: "thinking_level_change", id: "t0", parentId: null, timestamp: "", thinkingLevel: "high" },
+        entry("s1", "t0", { role: "system", content: "", sections: { preamble: "prompt" }, timestamp: at }),
+        entry("u1", "s1", { role: "user", content: [{ type: "text", text: "list files" }], timestamp: at + 1 }),
+        entry("a1", "u1", {
+          role: "assistant",
+          model: "model-a",
+          stopReason: "toolUse",
+          content: [
+            { type: "thinking", thinking: "Need ls" },
+            { type: "text", text: "Checking." },
+            { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "ls" } },
+          ],
+          timestamp: at + 2,
+        }),
+        entry("r1", "a1", {
+          role: "toolResult", toolCallId: "call-1", toolName: "bash",
+          content: [{ type: "text", text: "a.txt" }], isError: false, timestamp: at + 3,
+        }),
+        entry("a2", "r1", {
+          role: "assistant", model: "model-a", stopReason: "stop",
+          content: [{ type: "text", text: "One file: a.txt" }], timestamp: at + 4,
+        }),
+        // Abandoned branch from u1 must not leak into the visible transcript.
+        entry("x1", "u1", {
+          role: "assistant", stopReason: "stop",
+          content: [{ type: "text", text: "abandoned" }], timestamp: at + 5,
+        }),
+        { type: "session_info", id: "n1", parentId: "a2", timestamp: "", name: "List files" },
+        { type: "custom", id: "c1", parentId: "n1", timestamp: "", customType: "ext", data: {} },
+      ]), { sourceId: "2026-10-11T01-11-58-755Z_pi-session", fallbackTimestamp: 1 });
+
+      expect(conversation).toMatchObject({
+        id: "imported-pi-pi-session",
+        title: "List files",
+        titleSource: "user",
+        createdAt: at + 1,
+        updatedAt: at + 4,
+        importedFrom: {
+          source: "pi",
+          sourceId: "pi-session",
+          config: { model: "model-a", reasoningEffort: "high" },
+        },
+      });
+      expect(conversation?.messages.map((message) => [message.role, message.content])).toEqual([
+        ["user", "list files"],
+        ["assistant", "Checking.\n\nOne file: a.txt"],
+      ]);
+      expect(conversation?.messages[1].contentBlocks).toEqual([
+        { type: "thinking", text: "Need ls", isThinking: false },
+        { type: "text", text: "Checking." },
+        {
+          type: "tool",
+          toolCall: {
+            id: "call-1",
+            toolName: "bash",
+            args: { command: "ls" },
+            result: "a.txt",
+            isError: false,
+            isRunning: false,
+          },
+        },
+        { type: "text", text: "One file: a.txt" },
+      ]);
+      expect(conversation?.messages.every((message) => message.importedFrom === "pi")).toBe(true);
+    });
+
+    it("keeps user images, falls back to the first prompt, and reports a live turn", () => {
+      const snapshot = parseExternalChatTranscriptSnapshot("pi", jsonl([
+        header,
+        entry("u1", null, {
+          role: "user",
+          content: [
+            { type: "text", text: "what is this?" },
+            { type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" },
+            { type: "image", mimeType: "image/svg+xml", data: "PHN2Zz4=" },
+          ],
+          timestamp: at,
+        }),
+      ]), { sourceId: "file", fallbackTimestamp: 1 });
+
+      expect(snapshot.turnState).toEqual({ isLoading: true, isStreaming: true });
+      expect(snapshot.conversation?.title).toBe("what is this?");
+      expect(snapshot.conversation?.titleSource).toBe("fallback");
+      expect(snapshot.conversation?.messages[0].images).toEqual(["data:image/png;base64,iVBORw0KGgo="]);
+      expect(snapshot.conversation?.messages.at(-1)?.content).toBe("Processing...");
+    });
+
+    it("skips sessions without a user turn", () => {
+      expect(parsePiTranscript(jsonl([
+        header,
+        entry("s1", null, { role: "system", content: "", timestamp: at }),
+      ]), { sourceId: "empty", fallbackTimestamp: 1 })).toBeNull();
+    });
   });
 });

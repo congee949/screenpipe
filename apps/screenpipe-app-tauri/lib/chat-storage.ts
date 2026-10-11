@@ -519,7 +519,9 @@ export function conversationMetaFromJson(conv: any): ConversationMeta | null {
     presetId: typeof conv.presetId === "string" ? conv.presetId : undefined,
     importedFrom:
       conv.importedFrom &&
-      (conv.importedFrom.source === "claude-code" || conv.importedFrom.source === "codex") &&
+      (conv.importedFrom.source === "claude-code"
+        || conv.importedFrom.source === "codex"
+        || conv.importedFrom.source === "pi") &&
       typeof conv.importedFrom.sourceId === "string" &&
       typeof conv.importedFrom.importedAt === "number"
         ? conv.importedFrom

@@ -199,18 +199,21 @@ const RECENT_SOURCE_OPTIONS: Array<{ source: RecentSource; label: string }> = [
   { source: "screenpipe", label: msg("Screenpipe", {}) },
   { source: "codex", label: msg("Codex", {}) },
   { source: "claude-code", label: msg("Claude", {}) },
+  { source: "pi", label: msg("Pi", {}) },
 ];
 const RECENT_SOURCE_ICONS: Record<RecentSource, string> = {
   screenpipe: "/images/screenpipe.png",
   codex: "/images/codex.svg",
   "claude-code": "/images/claude-ai.svg",
+  pi: "/images/pi.svg",
 };
 const RECENT_SOURCE_SHORTCUTS = {
   screenpipe: "s",
   codex: "c",
   "claude-code": "l",
+  pi: "e",
 } as const satisfies Record<RecentSource, string>;
-const RECENTS_MENU_SHORTCUT_KEYS = ["s", "c", "l", "b", "i", "p", "u"] as const;
+const RECENTS_MENU_SHORTCUT_KEYS = ["s", "c", "l", "e", "b", "i", "p", "u"] as const;
 
 function recentSource(session: SessionRecord): RecentSource {
   return session.importedFrom?.source ?? "screenpipe";
@@ -310,7 +313,8 @@ export function hiddenRecentSourcesFromStoredValue(
     return new Set(
       Array.isArray(parsed)
         ? parsed.filter((source): source is RecentSource =>
-            source === "screenpipe" || source === "codex" || source === "claude-code",
+            source === "screenpipe" || source === "codex" || source === "claude-code"
+              || source === "pi",
           )
         : [],
     );
@@ -3135,7 +3139,9 @@ export function SidebarChatRow({
       ? "Claude"
       : importedSource === "codex"
         ? "Codex"
-        : null;
+        : importedSource === "pi"
+          ? "Pi"
+          : null;
   const harness = session.importedFrom?.harness ?? (sourceLabel ? null : "screenpipe");
   const harnessLabel =
     harness === "github-copilot"
@@ -3156,8 +3162,8 @@ export function SidebarChatRow({
           ? "/images/screenpipe.png"
           : harness === "terminal"
             ? null
-            : importedSource === "claude-code"
-              ? "/images/claude-ai.svg"
+            : importedSource
+              ? RECENT_SOURCE_ICONS[importedSource]
               : "/images/codex.svg";
   // The row is both the click target and the right-click (context menu)
   // anchor. The kebab below stays as a discoverable, mouse-only entry point;

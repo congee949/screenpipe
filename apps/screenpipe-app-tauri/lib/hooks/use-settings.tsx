@@ -152,7 +152,7 @@ export interface ChatMessage {
 	role: "user" | "assistant";
 	content: string;
 	/** Local history source for messages copied from another agent client. */
-	importedFrom?: "claude-code" | "codex";
+	importedFrom?: "claude-code" | "codex" | "pi";
 	intent?: "steer";
 	turnIntentId?: string;
 	timestamp: number;
@@ -227,7 +227,7 @@ export interface ChatConversation {
 	updatedAt: number;
 	/** Provenance for an explicitly imported local agent conversation. */
 	importedFrom?: {
-		source: "claude-code" | "codex";
+		source: "claude-code" | "codex" | "pi";
 		sourceId: string;
 		importedAt: number;
 		/** Optional when the transcript exposes which client hosted the run. */

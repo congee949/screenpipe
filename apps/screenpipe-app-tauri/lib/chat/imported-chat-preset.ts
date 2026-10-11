@@ -20,6 +20,9 @@ export function resolveImportedChatPreset(
   if (saved) return { preset: saved, created: false };
   const source = conversation.importedFrom;
   if (!source || !allowAgentPresets) return undefined;
+  // Pi models usually come from the user's own provider config, which an ACP
+  // preset cannot reproduce; continue Pi chats with the default preset.
+  if (source.source === "pi") return undefined;
   const agentId = source.source === "codex" ? "codex-acp" : "claude-acp";
   // Older Claude imports already kept message.model; use it without requiring
   // a reimport. Missing metadata stays unset so the adapter chooses its default.

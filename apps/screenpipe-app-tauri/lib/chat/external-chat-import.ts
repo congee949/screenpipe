@@ -13,6 +13,7 @@ import {
 } from "@/lib/chat-storage";
 import {
   externalChatConversationId,
+  externalChatSourceLabel,
   parseExternalChatTranscriptSnapshot,
   type ExternalChatSource,
 } from "@/lib/chat/external-chat-parser";
@@ -132,7 +133,7 @@ function prepareImportedConversation(
       existing.lastContentAt ?? 0,
       incoming.lastContentAt ?? 0,
     ) || undefined,
-    // JSONL transcripts do not expose Codex or Claude's real unread state, so
+    // JSONL transcripts do not expose the agent client's real unread state, so
     // mirror provider updates as read instead of inventing a notification from
     // file timestamps. A newer Screenpipe-side continuation still has a later
     // lastContentAt and therefore keeps the native unread behavior.
@@ -179,10 +180,6 @@ function importedConversationIsUnchanged(
       && JSON.stringify(message.contentBlocks ?? [])
         === JSON.stringify(candidate.contentBlocks ?? []);
   });
-}
-
-function sourceLabel(source: ExternalChatSource): string {
-  return source === "claude-code" ? "Claude Code" : "Codex";
 }
 
 function timeToMs(value: unknown): number {
@@ -280,6 +277,58 @@ async function listClaudeCandidates(
   };
 }
 
+/**
+ * Pi keeps sessions under `<agent dir>/sessions`, where the agent dir defaults
+ * to `~/.pi/agent` and is often pointed at a sibling (`PI_CODING_AGENT_DIR`)
+ * to keep separate configurations. The desktop app does not inherit shell
+ * environment variables, so discover every agent dir below `~/.pi` instead.
+ */
+export async function listPiSessionRoots(home: string): Promise<string[]> {
+  const piHome = await join(home, ".pi");
+  if (!(await exists(piHome))) return [];
+  const roots: string[] = [];
+  try {
+    for (const entry of await readDir(piHome)) {
+      if (!entry.isDirectory) continue;
+      const root = await join(piHome, entry.name, "sessions");
+      if (await exists(root)) roots.push(root);
+    }
+  } catch {
+    // An unreadable ~/.pi must not hide Claude Code or Codex history.
+  }
+  return roots;
+}
+
+async function listPiCandidates(
+  home: string,
+  cutoffMs: number,
+): Promise<ExternalChatDiscovery> {
+  const candidates: ExternalChatCandidate[] = [];
+  for (const root of await listPiSessionRoots(home)) {
+    try {
+      for (const project of await readDir(root)) {
+        if (!project.isDirectory) continue;
+        const projectPath = await join(root, project.name);
+        try {
+          // Session JSONLs sit directly in the per-cwd folder; subagent and
+          // fork artifacts live in nested directories and are not user chats.
+          for (const entry of await readDir(projectPath)) {
+            if (entry.isDirectory || !entry.name.toLowerCase().endsWith(".jsonl")) continue;
+            const path = await join(projectPath, entry.name);
+            const candidate = await externalChatCandidateForPath("pi", path);
+            if (candidate && candidate.modifiedAt >= cutoffMs) candidates.push(candidate);
+          }
+        } catch {
+          // A single unreadable project must not hide other Pi workspaces.
+        }
+      }
+    } catch {
+      // Same for a single unreadable agent dir.
+    }
+  }
+  return { candidates, availableCount: candidates.length, omittedByLimit: 0 };
+}
+
 function calendarDatesInWindow(nowMs: number, cutoffMs: number): Date[] {
   const cursor = new Date(nowMs);
   cursor.setHours(0, 0, 0, 0);
@@ -363,7 +412,7 @@ function summarizeSource(
   const candidates = eligible.slice(0, MAX_EXTERNAL_CHATS_PER_SOURCE);
   return {
     source,
-    label: sourceLabel(source),
+    label: externalChatSourceLabel(source),
     candidates,
     availableCount: discovery.availableCount,
     skippedTooLarge: sorted.length - eligible.length,
@@ -380,17 +429,19 @@ export async function scanExternalChatHistory(
   const home = options.home ?? await homeDir();
   const nowMs = options.nowMs ?? Date.now();
   const cutoffMs = nowMs - EXTERNAL_CHAT_LOOKBACK_DAYS * MS_PER_DAY;
-  const [claude, codex] = await Promise.all([
+  const [claude, codex, pi] = await Promise.all([
     listClaudeCandidates(home, cutoffMs),
     listCodexCandidates(home, cutoffMs, nowMs),
+    listPiCandidates(home, cutoffMs),
   ]);
   const sources = [
     summarizeSource("claude-code", claude),
     summarizeSource("codex", codex),
+    summarizeSource("pi", pi),
   ];
   return {
     sources,
-    maintenanceCandidates: [...claude.candidates, ...codex.candidates].filter(
+    maintenanceCandidates: [...claude.candidates, ...codex.candidates, ...pi.candidates].filter(
       (candidate) => candidate.maintenance != null,
     ),
     totalCandidates: sources.reduce((total, source) => total + source.candidates.length, 0),

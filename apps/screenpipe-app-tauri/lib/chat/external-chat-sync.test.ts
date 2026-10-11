@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   candidateForPath: vi.fn(),
   importExternalChatHistory: vi.fn(),
   scanExternalChatHistory: vi.fn(),
+  listPiSessionRoots: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/path", () => ({
@@ -31,6 +32,7 @@ vi.mock("@/lib/chat/external-chat-import", () => ({
   importExternalChatHistory: mocks.importExternalChatHistory,
   isScreenpipeBackgroundClaudeProject: (project: string) =>
     project.toLowerCase().endsWith("--screenpipe-pi-daily-summary"),
+  listPiSessionRoots: mocks.listPiSessionRoots,
   scanExternalChatHistory: mocks.scanExternalChatHistory,
 }));
 vi.mock("@/lib/utils/tauri", () => ({
@@ -48,6 +50,7 @@ describe("external chat live sync", () => {
     mocks.callbacks.clear();
     mocks.unwatchByRoot.clear();
     mocks.exists.mockResolvedValue(true);
+    mocks.listPiSessionRoots.mockResolvedValue([]);
     mocks.watch.mockImplementation(async (
       root: string,
       callback: (event: {
@@ -132,6 +135,21 @@ describe("external chat live sync", () => {
     )).toBe(false);
   });
 
+  it("accepts only direct Pi sessions in a per-cwd folder", () => {
+    const piRoot = "/fixture/.pi/agent/sessions";
+    expect(isExternalChatTranscriptPath(
+      "pi",
+      piRoot,
+      `${piRoot}/--Users-me--/2026-10-11T01-11-58-755Z_session.jsonl`,
+    )).toBe(true);
+    expect(isExternalChatTranscriptPath(
+      "pi",
+      piRoot,
+      `${piRoot}/--Users-me--/2026-10-11T01-11-58-755Z_session/run-0/child.jsonl`,
+    )).toBe(false);
+    expect(isExternalChatTranscriptPath("pi", piRoot, `${piRoot}/stray.jsonl`)).toBe(false);
+  });
+
   it("reconciles once, streams changed files, and releases both watchers", async () => {
     const controller = await startExternalChatSync({ home: "/fixture" });
     const claudeRoot = "/fixture/.claude/projects";
@@ -177,6 +195,26 @@ describe("external chat live sync", () => {
     controller.stop();
     expect(mocks.unwatchByRoot.get(claudeRoot)).toHaveBeenCalledOnce();
     expect(mocks.unwatchByRoot.get(codexRoot)).toHaveBeenCalledOnce();
+  });
+
+  it("watches every discovered Pi agent dir and imports live Pi updates", async () => {
+    const piRoots = ["/fixture/.pi/agent/sessions", "/fixture/.pi/agent-work/sessions"];
+    mocks.listPiSessionRoots.mockResolvedValue(piRoots);
+    const controller = await startExternalChatSync({ home: "/fixture" });
+
+    expect(mocks.watch).toHaveBeenCalledTimes(4);
+    const livePath = `${piRoots[1]}/--Users-me--/2026-10-11T01-11-58-755Z_live.jsonl`;
+    mocks.callbacks.get(piRoots[1])?.({
+      type: { create: { kind: "file" } },
+      paths: [livePath],
+      attrs: {},
+    });
+
+    await vi.waitFor(() => {
+      expect(mocks.candidateForPath).toHaveBeenCalledWith("pi", livePath);
+    });
+    controller.stop();
+    for (const root of piRoots) expect(mocks.unwatchByRoot.get(root)).toHaveBeenCalledOnce();
   });
 
   it("starts watching a provider root that appears after startup", async () => {
